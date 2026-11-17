@@ -33,38 +33,47 @@ pub const TARGET: driver::Target<'static> = driver::Target {
 };
 
 /// Which GPU ports a build runs, and so whose firmware its bundle holds:
-/// the AMD port (amdgpu), which a release leaves out with its driver. The
-/// boot image enables this crate's `amdgpu-port` exactly where it enables
-/// amdgpu (`crates/stela-boot/Cargo.toml`), and `stela` where it is built
-/// with `amdgpu-port` (`crates/stela-cli/Cargo.toml`), so a default stick
-/// holds the files of the default image's drivers and no others. No Intel
-/// GPU firmware is pinned yet; its port joins here with its recipes.
+/// the AMD port (amdgpu) and the Intel port (xe), which a release leaves out
+/// with their drivers. The boot image enables this crate's `amdgpu-port` and
+/// `xe-port` exactly where it enables amdgpu and xe
+/// (`crates/stela-boot/Cargo.toml`), and `stela` where it is built with them
+/// (`crates/stela-cli/Cargo.toml`), so a default stick holds the files of the
+/// default image's drivers and no others.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct Ports {
     pub amd: bool,
+    pub intel: bool,
 }
 
 impl Ports {
     /// This build's ports.
     pub const BUILT: Self = Self {
         amd: cfg!(feature = "amdgpu-port"),
+        intel: cfg!(feature = "xe-port"),
     };
-    /// A build without the AMD port, as a release is.
-    pub const NONE: Self = Self { amd: false };
+    /// A build without the AMD or Intel port, as a release is.
+    pub const NONE: Self = Self {
+        amd: false,
+        intel: false,
+    };
     /// A build with every port.
-    pub const ALL: Self = Self { amd: true };
+    pub const ALL: Self = Self {
+        amd: true,
+        intel: true,
+    };
 }
 
 /// The port a recipe family belongs to, if any.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum Port {
     Always,
+    Intel,
     Amd,
 }
 
 /// Every recipe family, in the order a volume short of room keeps them: the
 /// small network and Bluetooth files first, the GPU's large images last.
-const ALL: [(&str, &[Recipe], Port); 10] = [
+const ALL: [(&str, &[Recipe], Port); 11] = [
     (
         "Wi-Fi regulatory database",
         recipes::REGULATORY,
@@ -81,6 +90,7 @@ const ALL: [(&str, &[Recipe], Port); 10] = [
         Port::Always,
     ),
     ("Intel Bluetooth", recipes::INTEL_RSA, Port::Always),
+    ("Intel GPU", recipes::XE, Port::Intel),
     ("AMD GPU", recipes::AMDGPU, Port::Amd),
     ("NVIDIA GSP-RM", recipes::GSP, Port::Always),
 ];
@@ -90,6 +100,7 @@ pub fn families_for(ports: Ports) -> impl Iterator<Item = (&'static str, &'stati
     ALL.iter()
         .filter(move |(_, _, port)| match port {
             Port::Always => true,
+            Port::Intel => ports.intel,
             Port::Amd => ports.amd,
         })
         .map(|&(name, recipes, _)| (name, recipes))
@@ -428,6 +439,19 @@ pub fn select_for(functions: &[Pci], ports: Ports) -> Selection {
                         selection.unknown.push(why.clone());
                     }
                 }
+            }
+            continue;
+        }
+        if function.vendor == 0x8086 && function.class == 0x03 {
+            // Without the Intel port the GPU has no driver and no files; it
+            // stays as the firmware set it.
+            if !ports.intel {
+                continue;
+            }
+            if recipes::require_xe(&mut inventory, function.device).is_ok() {
+                selection.plan(&inventory, &why);
+            } else if !selection.unknown.contains(&why) {
+                selection.unknown.push(why.clone());
             }
             continue;
         }

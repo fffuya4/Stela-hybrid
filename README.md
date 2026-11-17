@@ -92,6 +92,22 @@ cargo xtask dist
 This writes `target/release/stela`. The first build fetches and compiles
 Linux, Mesa and LLVM sources and takes a long time.
 
+## Laptops with hybrid graphics (Intel display, NVIDIA render, no MUX switch)
+
+On many laptops the panel is wired to the Intel iGPU and the NVIDIA GPU has no
+display outputs. Build the image and the `stela` tool with the Intel port so
+that xe binds the iGPU, scans out the panel, and shows the frames NVK draws on
+the NVIDIA GPU:
+
+```
+cargo xtask boot build --release --xe
+cargo build --release -p stela-cli --features xe-port
+```
+
+The first command also needs to fetch Linux's xe/i915 sources (`cargo xtask gpu
+fetch`, run for you by `boot build`). The stick must be made with the
+`xe-port` build of `stela` so it carries Intel's GuC, HuC and display firmware.
+
 ## Legal
 
 Stela contains no Apple software. You are responsible for following Apple's

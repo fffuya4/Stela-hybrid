@@ -130,6 +130,11 @@ pub enum Command {
         /// amdgpu binds the GPU and RADV backs the Metal device over it.
         #[arg(long)]
         radv: bool,
+        /// Carry xe beside nouveau, for a laptop whose panel is wired to its
+        /// Intel iGPU and whose NVIDIA GPU has no display outputs (no MUX
+        /// switch): xe binds the iGPU and shows the frames NVK draws.
+        #[arg(long, conflicts_with_all = ["amdgpu", "radv"])]
+        xe: bool,
     },
     /// Boot `stela.efi` with an ARM image in x86 QEMU.
     Run(Box<Run>),
@@ -503,6 +508,7 @@ pub fn run(command: Command) -> Result<ExitCode> {
             diagnostics,
             amdgpu,
             radv,
+            xe,
         } => {
             crate::gpu::fetch::fetch(false)?;
             crate::gpu::build_nvk(crate::gpu::default_jobs())?;
@@ -511,6 +517,8 @@ pub fn run(command: Command) -> Result<ExitCode> {
                 Gpu::Radv
             } else if amdgpu {
                 Gpu::Amdgpu
+            } else if xe {
+                Gpu::Xe
             } else {
                 Gpu::Nvk
             };
@@ -538,6 +546,9 @@ enum Gpu {
     Amdgpu,
     /// amdgpu with RADV, ACO and NIR among the image's Mesa drivers.
     Radv,
+    /// xe beside NVK: the Intel iGPU shows the frames NVK draws on a
+    /// discrete GPU that has no display outputs of its own.
+    Xe,
 }
 
 fn build_for_boot(release: bool, diagnostics: bool, gpu: Gpu) -> Result<PathBuf> {
@@ -586,6 +597,9 @@ fn build_with_diagnostics(release: bool, diagnostics: bool, gpu: Gpu) -> Result<
         }
         Gpu::Radv => {
             command.args(["--features", "radv"]);
+        }
+        Gpu::Xe => {
+            command.args(["--features", "nvk,xe"]);
         }
     }
     if release {

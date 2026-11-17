@@ -1,0 +1,464 @@
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index 65cf14b..4704a67 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -221,7 +221,7 @@ jobs:
+         env:
+           STELA_RELEASE: "1"
+         run: |
+-          cargo xtask boot build --release
++          cargo xtask boot build --release --xe
+           echo "Vulkan drivers: $(paste -sd, target/gpu/nvk/vulkan-drivers)" >> "$GITHUB_STEP_SUMMARY"
+           efi=target/boot/x86_64-unknown-uefi/release/stela-deploy.efi
+           [[ "$(head -c 2 "$efi")" == MZ ]] || { echo "::error::$efi is not a PE image"; exit 1; }
+@@ -242,16 +242,10 @@ jobs:
+       fail-fast: false
+       matrix:
+         include:
+-          # glibc 2.35: Ubuntu 22.04, Debian 12, Fedora 36 and newer.
+-          - os: ubuntu-22.04
+-            platform: linux-x86_64
+-            targets: x86_64-unknown-linux-gnu
++          # Hybrid-GPU fork: the Windows tool only.
+           - os: windows-2025
+             platform: windows-x86_64
+             targets: x86_64-pc-windows-msvc
+-          - os: macos-26
+-            platform: macos-universal
+-            targets: aarch64-apple-darwin x86_64-apple-darwin
+     runs-on: ${{ matrix.os }}
+     timeout-minutes: 90
+     env:
+@@ -308,7 +302,7 @@ jobs:
+         run: |
+           export STELA_EFI="$PWD/efi/stela.efi"
+           for target in ${{ matrix.targets }}; do
+-            cargo build --release --locked -p stela-cli --target "$target"
++            cargo build --release --locked -p stela-cli --features xe-port --target "$target"
+           done
+           mkdir -p "$ARCHIVE"
+           case "$RUNNER_OS" in
+@@ -375,7 +369,7 @@ jobs:
+           VERSION: ${{ needs.version.outputs.version }}
+         run: |
+           count="$(ls dist | wc -l)"
+-          [[ "$count" == 4 ]] || { echo "::error::expected 3 archives and the source, found $count: $(ls dist)"; exit 1; }
++          [[ "$count" == 2 ]] || { echo "::error::expected the Windows archive and the source, found $count: $(ls dist)"; exit 1; }
+           (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
+           # The template's Changes section is empty: it is written by hand
+           # on the published release.
+diff --git a/README.md b/README.md
+index 63d166e..5ae0287 100644
+--- a/README.md
++++ b/README.md
+@@ -92,6 +92,22 @@ cargo xtask dist
+ This writes `target/release/stela`. The first build fetches and compiles
+ Linux, Mesa and LLVM sources and takes a long time.
+ 
++## Laptops with hybrid graphics (Intel display, NVIDIA render, no MUX switch)
++
++On many laptops the panel is wired to the Intel iGPU and the NVIDIA GPU has no
++display outputs. Build the image and the `stela` tool with the Intel port so
++that xe binds the iGPU, scans out the panel, and shows the frames NVK draws on
++the NVIDIA GPU:
++
++```
++cargo xtask boot build --release --xe
++cargo build --release -p stela-cli --features xe-port
++```
++
++The first command also needs to fetch Linux's xe/i915 sources (`cargo xtask gpu
++fetch`, run for you by `boot build`). The stick must be made with the
++`xe-port` build of `stela` so it carries Intel's GuC, HuC and display firmware.
++
+ ## Legal
+ 
+ Stela contains no Apple software. You are responsible for following Apple's
+diff --git a/crates/stela-boot/Cargo.toml b/crates/stela-boot/Cargo.toml
+index 136fed9..3dafdeb 100644
+--- a/crates/stela-boot/Cargo.toml
++++ b/crates/stela-boot/Cargo.toml
+@@ -38,6 +38,12 @@ amdgpu = ["stela-drivers/amdgpu-port", "stela-loader/amdgpu-port"]
+ # amdgpu with RADV, NIR and ACO among the Mesa drivers `cargo xtask gpu nvk`
+ # builds, which back the Metal device on the GPU amdgpu binds.
+ radv = ["nvk", "amdgpu", "stela-drivers/radv"]
++# xe in the image's Linux environment, for the Intel GPUs its table holds
++# (Tiger Lake and later, including Raptor Lake-HX). On a laptop whose panel is
++# wired to the Intel iGPU and whose NVIDIA GPU has no display outputs (no MUX
++# switch), xe binds the iGPU and scans out the frames NVK draws on the NVIDIA
++# GPU. Needs NVK, which draws; xe only shows.
++xe = ["nvk", "stela-drivers/xe-port", "stela-loader/xe-port"]
+ 
+ [dependencies]
+ stela-linux = { path = "../stela-linux", features = ["kernel"] }
+diff --git a/crates/stela-cli/Cargo.toml b/crates/stela-cli/Cargo.toml
+index 644ac06..3ac6612 100644
+--- a/crates/stela-cli/Cargo.toml
++++ b/crates/stela-cli/Cargo.toml
+@@ -20,6 +20,9 @@ path = "src/main.rs"
+ # built with amdgpu (`cargo xtask boot build --amdgpu` or `--radv`); a
+ # release leaves both out.
+ amdgpu-port = ["stela-loader/amdgpu-port"]
++# The Intel GPU port's firmware on the sticks `stela` makes, for a boot image
++# built with xe (`cargo xtask boot build --xe`).
++xe-port = ["stela-loader/xe-port"]
+ 
+ [dependencies]
+ stela-gpu-maintenance.workspace = true
+diff --git a/crates/stela-cli/src/setup/firmware.rs b/crates/stela-cli/src/setup/firmware.rs
+index 9a48038..295fc89 100644
+--- a/crates/stela-cli/src/setup/firmware.rs
++++ b/crates/stela-cli/src/setup/firmware.rs
+@@ -1037,11 +1037,13 @@ mod tests {
+         let manifest = bundle::manifest(&files).unwrap();
+         let parsed = bundle::Bundle::parse(&manifest).unwrap();
+         assert!(parsed.missing().is_empty());
+-        // A stick for an image with the AMD port also holds its firmware.
+-        let (objects, summary) = if cfg!(feature = "amdgpu-port") {
+-            (121, "for every supported device (184.9 MiB)")
+-        } else {
+-            (88, "for every supported device (177.0 MiB)")
++        // A stick for an image with the AMD or Intel port also holds its
++        // firmware.
++        let (objects, summary) = match (cfg!(feature = "amdgpu-port"), cfg!(feature = "xe-port")) {
++            (true, true) => (149, "for every supported device (194.8 MiB)"),
++            (true, false) => (121, "for every supported device (184.9 MiB)"),
++            (false, true) => (116, "for every supported device (186.9 MiB)"),
++            (false, false) => (88, "for every supported device (177.0 MiB)"),
+         };
+         assert_eq!(parsed.objects.len(), objects);
+         assert_eq!(bundle_summary(), summary);
+@@ -1329,10 +1331,11 @@ mod tests {
+         let status = bundle_status(dir.path()).unwrap_err();
+         assert_eq!(
+             status,
+-            if cfg!(feature = "amdgpu-port") {
+-                "the firmware on the stick is incomplete: 3 of 121 files are there"
+-            } else {
+-                "the firmware on the stick is incomplete: 3 of 88 files are there"
++            match (cfg!(feature = "amdgpu-port"), cfg!(feature = "xe-port")) {
++                (true, true) => "the firmware on the stick is incomplete: 3 of 149 files are there",
++                (true, false) => "the firmware on the stick is incomplete: 3 of 121 files are there",
++                (false, true) => "the firmware on the stick is incomplete: 3 of 116 files are there",
++                (false, false) => "the firmware on the stick is incomplete: 3 of 88 files are there",
+             }
+         );
+     }
+@@ -1355,10 +1358,11 @@ mod tests {
+         )
+         .unwrap();
+         let status = bundle_status(dir.path()).unwrap_err();
+-        let lacks = if cfg!(feature = "amdgpu-port") {
+-            "lacks 120 of 121 files"
+-        } else {
+-            "lacks 87 of 88 files"
++        let lacks = match (cfg!(feature = "amdgpu-port"), cfg!(feature = "xe-port")) {
++            (true, true) => "lacks 148 of 149 files",
++            (true, false) => "lacks 120 of 121 files",
++            (false, true) => "lacks 115 of 116 files",
++            (false, false) => "lacks 87 of 88 files",
+         };
+         assert!(status.contains(lacks), "{status}");
+         assert!(!status.contains("nvidia/"), "{status}");
+diff --git a/crates/stela-cli/src/setup/tests.rs b/crates/stela-cli/src/setup/tests.rs
+index ec62db0..08fe212 100644
+--- a/crates/stela-cli/src/setup/tests.rs
++++ b/crates/stela-cli/src/setup/tests.rs
+@@ -5682,10 +5682,11 @@ fn a_usb_made_without_an_nvidia_gpu_needs_no_firmware_step() {
+         lines.push(line);
+     }
+     assert_eq!(lines[0], lines[1]);
+-    let size = if cfg!(feature = "amdgpu-port") {
+-        "184.9 MiB"
+-    } else {
+-        "177.0 MiB"
++    let size = match (cfg!(feature = "amdgpu-port"), cfg!(feature = "xe-port")) {
++        (true, true) => "194.8 MiB",
++        (true, false) => "184.9 MiB",
++        (false, true) => "186.9 MiB",
++        (false, false) => "177.0 MiB",
+     };
+     assert!(lines[0].contains(size), "{}", lines[0]);
+     f.host.nvidia_gpus.borrow_mut().clear();
+diff --git a/crates/stela-driver-gpu/Cargo.toml b/crates/stela-driver-gpu/Cargo.toml
+index 7b1e667..5696ad0 100644
+--- a/crates/stela-driver-gpu/Cargo.toml
++++ b/crates/stela-driver-gpu/Cargo.toml
+@@ -28,7 +28,8 @@ nouveau-port = ["linux-drm"]
+ # image's registrations and AMD's stack its GPUs.
+ amdgpu-port = ["linux-drm"]
+ # Intel's xe with the display code it shares with i915, compiled unchanged;
+-# no boot starts it yet.
++# its unit joins the image's registrations and Intel's stack its GPUs, which
++# show the frames another GPU draws. stela-boot's `xe` feature starts it.
+ xe-port = ["linux-drm"]
+ # Stela's Metal device over the internal Vulkan boundary; no Vulkan driver.
+ metal = ["dep:stela-contracts"]
+diff --git a/crates/stela-loader/Cargo.toml b/crates/stela-loader/Cargo.toml
+index f9101a0..82119d8 100644
+--- a/crates/stela-loader/Cargo.toml
++++ b/crates/stela-loader/Cargo.toml
+@@ -15,6 +15,12 @@ default = ["std"]
+ # image: stela-boot's `amdgpu` and stela-cli's `amdgpu-port` turn it on, and
+ # a test keeps those lists one.
+ amdgpu-port = []
++# The Intel GPU port's firmware (xe's GuC, HuC, GSC and the display
++# microcontroller programs) in the host firmware bundle. Off by default;
++# stela-boot's `xe` and stela-cli's `xe-port` turn it on, and a test keeps
++# those lists one. An Intel iGPU that drives a laptop panel needs it so that
++# xe can bind it and show the frames another GPU (NVIDIA) draws.
++xe-port = []
+ # Without `std` only the kernel boot-bundle builder (`boot_bundle` and the
+ # formats it reads) is built, for `stela.efi`.
+ std = ["stela-soc-data/std",
+diff --git a/crates/stela-loader/src/host_firmware/bundle.rs b/crates/stela-loader/src/host_firmware/bundle.rs
+index 9de3a34..1526019 100644
+--- a/crates/stela-loader/src/host_firmware/bundle.rs
++++ b/crates/stela-loader/src/host_firmware/bundle.rs
+@@ -33,38 +33,47 @@ pub const TARGET: driver::Target<'static> = driver::Target {
+ };
+ 
+ /// Which GPU ports a build runs, and so whose firmware its bundle holds:
+-/// the AMD port (amdgpu), which a release leaves out with its driver. The
+-/// boot image enables this crate's `amdgpu-port` exactly where it enables
+-/// amdgpu (`crates/stela-boot/Cargo.toml`), and `stela` where it is built
+-/// with `amdgpu-port` (`crates/stela-cli/Cargo.toml`), so a default stick
+-/// holds the files of the default image's drivers and no others. No Intel
+-/// GPU firmware is pinned yet; its port joins here with its recipes.
++/// the AMD port (amdgpu) and the Intel port (xe), which a release leaves out
++/// with their drivers. The boot image enables this crate's `amdgpu-port` and
++/// `xe-port` exactly where it enables amdgpu and xe
++/// (`crates/stela-boot/Cargo.toml`), and `stela` where it is built with them
++/// (`crates/stela-cli/Cargo.toml`), so a default stick holds the files of the
++/// default image's drivers and no others.
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ pub struct Ports {
+     pub amd: bool,
++    pub intel: bool,
+ }
+ 
+ impl Ports {
+     /// This build's ports.
+     pub const BUILT: Self = Self {
+         amd: cfg!(feature = "amdgpu-port"),
++        intel: cfg!(feature = "xe-port"),
++    };
++    /// A build without the AMD or Intel port, as a release is.
++    pub const NONE: Self = Self {
++        amd: false,
++        intel: false,
+     };
+-    /// A build without the AMD port, as a release is.
+-    pub const NONE: Self = Self { amd: false };
+     /// A build with every port.
+-    pub const ALL: Self = Self { amd: true };
++    pub const ALL: Self = Self {
++        amd: true,
++        intel: true,
++    };
+ }
+ 
+ /// The port a recipe family belongs to, if any.
+ #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+ enum Port {
+     Always,
++    Intel,
+     Amd,
+ }
+ 
+ /// Every recipe family, in the order a volume short of room keeps them: the
+ /// small network and Bluetooth files first, the GPU's large images last.
+-const ALL: [(&str, &[Recipe], Port); 10] = [
++const ALL: [(&str, &[Recipe], Port); 11] = [
+     (
+         "Wi-Fi regulatory database",
+         recipes::REGULATORY,
+@@ -81,6 +90,7 @@ const ALL: [(&str, &[Recipe], Port); 10] = [
+         Port::Always,
+     ),
+     ("Intel Bluetooth", recipes::INTEL_RSA, Port::Always),
++    ("Intel GPU", recipes::XE, Port::Intel),
+     ("AMD GPU", recipes::AMDGPU, Port::Amd),
+     ("NVIDIA GSP-RM", recipes::GSP, Port::Always),
+ ];
+@@ -90,6 +100,7 @@ pub fn families_for(ports: Ports) -> impl Iterator<Item = (&'static str, &'stati
+     ALL.iter()
+         .filter(move |(_, _, port)| match port {
+             Port::Always => true,
++            Port::Intel => ports.intel,
+             Port::Amd => ports.amd,
+         })
+         .map(|&(name, recipes, _)| (name, recipes))
+@@ -431,6 +442,19 @@ pub fn select_for(functions: &[Pci], ports: Ports) -> Selection {
+             }
+             continue;
+         }
++        if function.vendor == 0x8086 && function.class == 0x03 {
++            // Without the Intel port the GPU has no driver and no files; it
++            // stays as the firmware set it.
++            if !ports.intel {
++                continue;
++            }
++            if recipes::require_xe(&mut inventory, function.device).is_ok() {
++                selection.plan(&inventory, &why);
++            } else if !selection.unknown.contains(&why) {
++                selection.unknown.push(why.clone());
++            }
++            continue;
++        }
+         if function.vendor == 0x1002 && function.class == 0x03 {
+             if !ports.amd {
+                 continue;
+diff --git a/crates/stela-loader/src/host_firmware/bundle/tests.rs b/crates/stela-loader/src/host_firmware/bundle/tests.rs
+index 3b2b775..cec514d 100644
+--- a/crates/stela-loader/src/host_firmware/bundle/tests.rs
++++ b/crates/stela-loader/src/host_firmware/bundle/tests.rs
+@@ -21,15 +21,25 @@ fn the_complete_bundle_holds_every_recipe_once_by_content() {
+     assert_eq!(count, objects.len());
+     // The RTL8168H and RTL8168M share a file, as the RTL9151A and RTL9151AS
+     // do, and, with the AMD port, amdgpu's `mec` and `mec2` of Raphael and
+-    // of Navi 21.
++    // of Navi 21. The Intel port's 28 files are all distinct.
+     if Ports::BUILT == Ports::ALL {
+         assert_eq!(count + 4, recipes().count());
+-        // The recipes' recorded lengths: 121 files, 184.9 MiB.
++        // The recipes' recorded lengths: 149 files, 194.8 MiB.
++        assert_eq!((count, bytes), (149, 204_290_704), "{count} {bytes}");
++    }
++    if Ports::BUILT == (Ports { amd: true, intel: false }) {
++        assert_eq!(count + 4, recipes().count());
++        // With the AMD port only: 121 files, 184.9 MiB.
+         assert_eq!((count, bytes), (121, 193_887_456), "{count} {bytes}");
+     }
++    if Ports::BUILT == (Ports { amd: false, intel: true }) {
++        assert_eq!(count + 2, recipes().count());
++        // With the Intel port only: 116 files, 186.9 MiB.
++        assert_eq!((count, bytes), (116, 195_988_152), "{count} {bytes}");
++    }
+     if Ports::BUILT == Ports::NONE {
+         assert_eq!(count + 2, recipes().count());
+-        // Without the AMD port: 88 files, 177.0 MiB.
++        // Without the AMD or Intel port: 88 files, 177.0 MiB.
+         assert_eq!((count, bytes), (88, 185_584_904), "{count} {bytes}");
+     }
+     // The GPU's large images come last, for a volume short of room.
+@@ -388,10 +398,11 @@ fn an_exact_binding_wins_over_the_bundle() {
+     assert_eq!(image.bytes(), b"abcd");
+ }
+ 
+-/// The AMD port named in a Cargo.toml line's feature list.
++/// The AMD and Intel ports named in a Cargo.toml line's feature list.
+ fn ports_of(line: &str) -> Ports {
+     Ports {
+         amd: line.contains("amdgpu-port\""),
++        intel: line.contains("xe-port\""),
+     }
+ }
+ 
+@@ -421,6 +432,53 @@ fn the_boot_images_drivers_and_the_bundle_name_the_same_gpu_ports() {
+     assert!(amdgpu.contains("\"stela-loader/amdgpu-port\""), "{amdgpu}");
+     let port = line(cli, "amdgpu-port = ");
+     assert!(port.contains("\"stela-loader/amdgpu-port\""), "{port}");
++    // The same for xe: the image's drivers and bundle, and the stick `stela`
++    // writes.
++    let xe = line(boot, "xe = ");
++    assert!(xe.contains("\"stela-drivers/xe-port\""), "{xe}");
++    assert!(xe.contains("\"stela-loader/xe-port\""), "{xe}");
++    let port = line(cli, "xe-port = ");
++    assert!(port.contains("\"stela-loader/xe-port\""), "{port}");
++}
++
++#[test]
++fn a_build_without_the_intel_port_bundles_none_of_its_firmware() {
++    let theirs = |member: &str| member.starts_with("i915/") || member.starts_with("xe/");
++    let without_port = objects_for(Ports::NONE);
++    assert!(!without_port.is_empty());
++    assert!(without_port.iter().all(|artifact| !theirs(artifact.member)));
++    // A Raptor Lake-S iGPU (the 14th-generation HX parts) and an NVIDIA GPU.
++    let functions = [pci(0x8086, 0xa788, 3), pci(0x10de, 0x2c02, 3)];
++    let without = select_for(&functions, Ports::NONE);
++    assert!(
++        without
++            .wanted
++            .iter()
++            .all(|(artifact, _)| !theirs(artifact.member))
++    );
++    assert!(without.unknown.is_empty());
++    let with = select_for(&functions, Ports::ALL);
++    let found: Vec<_> = with
++        .wanted
++        .iter()
++        .map(|(artifact, _)| artifact.member)
++        .filter(|member| theirs(member))
++        .collect();
++    // Alder Lake S and Raptor Lake S: Tiger Lake's GuC and HuC and the
++    // platform's display program.
++    for file in [
++        "i915/tgl_guc_70.bin",
++        "i915/tgl_huc.bin",
++        "i915/adls_dmc_ver2_01.bin",
++    ] {
++        assert!(found.contains(&file), "{file} {found:?}");
++    }
++    assert!(with.unknown.is_empty());
++    // This build's bundle holds them exactly when it has the port.
++    assert_eq!(
++        objects().iter().any(|artifact| theirs(artifact.member)),
++        Ports::BUILT.intel
++    );
+ }
+ 
+ #[test]
+diff --git a/xtask/src/boot.rs b/xtask/src/boot.rs
+index 5805aef..e8e2b0f 100644
+--- a/xtask/src/boot.rs
++++ b/xtask/src/boot.rs
+@@ -130,6 +130,11 @@ pub enum Command {
+         /// amdgpu binds the GPU and RADV backs the Metal device over it.
+         #[arg(long)]
+         radv: bool,
++        /// Carry xe beside nouveau, for a laptop whose panel is wired to its
++        /// Intel iGPU and whose NVIDIA GPU has no display outputs (no MUX
++        /// switch): xe binds the iGPU and shows the frames NVK draws.
++        #[arg(long, conflicts_with_all = ["amdgpu", "radv"])]
++        xe: bool,
+     },
+     /// Boot `stela.efi` with an ARM image in x86 QEMU.
+     Run(Box<Run>),
+@@ -503,6 +508,7 @@ pub fn run(command: Command) -> Result<ExitCode> {
+             diagnostics,
+             amdgpu,
+             radv,
++            xe,
+         } => {
+             crate::gpu::fetch::fetch(false)?;
+             crate::gpu::build_nvk(crate::gpu::default_jobs())?;
+@@ -511,6 +517,8 @@ pub fn run(command: Command) -> Result<ExitCode> {
+                 Gpu::Radv
+             } else if amdgpu {
+                 Gpu::Amdgpu
++            } else if xe {
++                Gpu::Xe
+             } else {
+                 Gpu::Nvk
+             };
+@@ -538,6 +546,9 @@ enum Gpu {
+     Amdgpu,
+     /// amdgpu with RADV, ACO and NIR among the image's Mesa drivers.
+     Radv,
++    /// xe beside NVK: the Intel iGPU shows the frames NVK draws on a
++    /// discrete GPU that has no display outputs of its own.
++    Xe,
+ }
+ 
+ fn build_for_boot(release: bool, diagnostics: bool, gpu: Gpu) -> Result<PathBuf> {
+@@ -587,6 +598,9 @@ fn build_with_diagnostics(release: bool, diagnostics: bool, gpu: Gpu) -> Result<
+         Gpu::Radv => {
+             command.args(["--features", "radv"]);
+         }
++        Gpu::Xe => {
++            command.args(["--features", "nvk,xe"]);
++        }
+     }
+     if release {
+         command.arg("--release");

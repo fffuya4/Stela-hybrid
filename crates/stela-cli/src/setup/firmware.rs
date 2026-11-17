@@ -1037,11 +1037,13 @@ mod tests {
         let manifest = bundle::manifest(&files).unwrap();
         let parsed = bundle::Bundle::parse(&manifest).unwrap();
         assert!(parsed.missing().is_empty());
-        // A stick for an image with the AMD port also holds its firmware.
-        let (objects, summary) = if cfg!(feature = "amdgpu-port") {
-            (121, "for every supported device (184.9 MiB)")
-        } else {
-            (88, "for every supported device (177.0 MiB)")
+        // A stick for an image with the AMD or Intel port also holds its
+        // firmware.
+        let (objects, summary) = match (cfg!(feature = "amdgpu-port"), cfg!(feature = "xe-port")) {
+            (true, true) => (149, "for every supported device (194.8 MiB)"),
+            (true, false) => (121, "for every supported device (184.9 MiB)"),
+            (false, true) => (116, "for every supported device (186.9 MiB)"),
+            (false, false) => (88, "for every supported device (177.0 MiB)"),
         };
         assert_eq!(parsed.objects.len(), objects);
         assert_eq!(bundle_summary(), summary);
@@ -1329,10 +1331,11 @@ mod tests {
         let status = bundle_status(dir.path()).unwrap_err();
         assert_eq!(
             status,
-            if cfg!(feature = "amdgpu-port") {
-                "the firmware on the stick is incomplete: 3 of 121 files are there"
-            } else {
-                "the firmware on the stick is incomplete: 3 of 88 files are there"
+            match (cfg!(feature = "amdgpu-port"), cfg!(feature = "xe-port")) {
+                (true, true) => "the firmware on the stick is incomplete: 3 of 149 files are there",
+                (true, false) => "the firmware on the stick is incomplete: 3 of 121 files are there",
+                (false, true) => "the firmware on the stick is incomplete: 3 of 116 files are there",
+                (false, false) => "the firmware on the stick is incomplete: 3 of 88 files are there",
             }
         );
     }
@@ -1355,10 +1358,11 @@ mod tests {
         )
         .unwrap();
         let status = bundle_status(dir.path()).unwrap_err();
-        let lacks = if cfg!(feature = "amdgpu-port") {
-            "lacks 120 of 121 files"
-        } else {
-            "lacks 87 of 88 files"
+        let lacks = match (cfg!(feature = "amdgpu-port"), cfg!(feature = "xe-port")) {
+            (true, true) => "lacks 148 of 149 files",
+            (true, false) => "lacks 120 of 121 files",
+            (false, true) => "lacks 115 of 116 files",
+            (false, false) => "lacks 87 of 88 files",
         };
         assert!(status.contains(lacks), "{status}");
         assert!(!status.contains("nvidia/"), "{status}");

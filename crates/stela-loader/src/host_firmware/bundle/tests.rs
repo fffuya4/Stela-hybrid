@@ -21,15 +21,25 @@ fn the_complete_bundle_holds_every_recipe_once_by_content() {
     assert_eq!(count, objects.len());
     // The RTL8168H and RTL8168M share a file, as the RTL9151A and RTL9151AS
     // do, and, with the AMD port, amdgpu's `mec` and `mec2` of Raphael and
-    // of Navi 21.
+    // of Navi 21. The Intel port's 28 files are all distinct.
     if Ports::BUILT == Ports::ALL {
         assert_eq!(count + 4, recipes().count());
-        // The recipes' recorded lengths: 121 files, 184.9 MiB.
+        // The recipes' recorded lengths: 149 files, 194.8 MiB.
+        assert_eq!((count, bytes), (149, 204_290_704), "{count} {bytes}");
+    }
+    if Ports::BUILT == (Ports { amd: true, intel: false }) {
+        assert_eq!(count + 4, recipes().count());
+        // With the AMD port only: 121 files, 184.9 MiB.
         assert_eq!((count, bytes), (121, 193_887_456), "{count} {bytes}");
+    }
+    if Ports::BUILT == (Ports { amd: false, intel: true }) {
+        assert_eq!(count + 2, recipes().count());
+        // With the Intel port only: 116 files, 186.9 MiB.
+        assert_eq!((count, bytes), (116, 195_988_152), "{count} {bytes}");
     }
     if Ports::BUILT == Ports::NONE {
         assert_eq!(count + 2, recipes().count());
-        // Without the AMD port: 88 files, 177.0 MiB.
+        // Without the AMD or Intel port: 88 files, 177.0 MiB.
         assert_eq!((count, bytes), (88, 185_584_904), "{count} {bytes}");
     }
     // The GPU's large images come last, for a volume short of room.
@@ -388,10 +398,11 @@ fn an_exact_binding_wins_over_the_bundle() {
     assert_eq!(image.bytes(), b"abcd");
 }
 
-/// The AMD port named in a Cargo.toml line's feature list.
+/// The AMD and Intel ports named in a Cargo.toml line's feature list.
 fn ports_of(line: &str) -> Ports {
     Ports {
         amd: line.contains("amdgpu-port\""),
+        intel: line.contains("xe-port\""),
     }
 }
 
@@ -421,6 +432,53 @@ fn the_boot_images_drivers_and_the_bundle_name_the_same_gpu_ports() {
     assert!(amdgpu.contains("\"stela-loader/amdgpu-port\""), "{amdgpu}");
     let port = line(cli, "amdgpu-port = ");
     assert!(port.contains("\"stela-loader/amdgpu-port\""), "{port}");
+    // The same for xe: the image's drivers and bundle, and the stick `stela`
+    // writes.
+    let xe = line(boot, "xe = ");
+    assert!(xe.contains("\"stela-drivers/xe-port\""), "{xe}");
+    assert!(xe.contains("\"stela-loader/xe-port\""), "{xe}");
+    let port = line(cli, "xe-port = ");
+    assert!(port.contains("\"stela-loader/xe-port\""), "{port}");
+}
+
+#[test]
+fn a_build_without_the_intel_port_bundles_none_of_its_firmware() {
+    let theirs = |member: &str| member.starts_with("i915/") || member.starts_with("xe/");
+    let without_port = objects_for(Ports::NONE);
+    assert!(!without_port.is_empty());
+    assert!(without_port.iter().all(|artifact| !theirs(artifact.member)));
+    // A Raptor Lake-S iGPU (the 14th-generation HX parts) and an NVIDIA GPU.
+    let functions = [pci(0x8086, 0xa788, 3), pci(0x10de, 0x2c02, 3)];
+    let without = select_for(&functions, Ports::NONE);
+    assert!(
+        without
+            .wanted
+            .iter()
+            .all(|(artifact, _)| !theirs(artifact.member))
+    );
+    assert!(without.unknown.is_empty());
+    let with = select_for(&functions, Ports::ALL);
+    let found: Vec<_> = with
+        .wanted
+        .iter()
+        .map(|(artifact, _)| artifact.member)
+        .filter(|member| theirs(member))
+        .collect();
+    // Alder Lake S and Raptor Lake S: Tiger Lake's GuC and HuC and the
+    // platform's display program.
+    for file in [
+        "i915/tgl_guc_70.bin",
+        "i915/tgl_huc.bin",
+        "i915/adls_dmc_ver2_01.bin",
+    ] {
+        assert!(found.contains(&file), "{file} {found:?}");
+    }
+    assert!(with.unknown.is_empty());
+    // This build's bundle holds them exactly when it has the port.
+    assert_eq!(
+        objects().iter().any(|artifact| theirs(artifact.member)),
+        Ports::BUILT.intel
+    );
 }
 
 #[test]

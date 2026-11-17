@@ -38,6 +38,12 @@ amdgpu = ["stela-drivers/amdgpu-port", "stela-loader/amdgpu-port"]
 # amdgpu with RADV, NIR and ACO among the Mesa drivers `cargo xtask gpu nvk`
 # builds, which back the Metal device on the GPU amdgpu binds.
 radv = ["nvk", "amdgpu", "stela-drivers/radv"]
+# xe in the image's Linux environment, for the Intel GPUs its table holds
+# (Tiger Lake and later, including Raptor Lake-HX). On a laptop whose panel is
+# wired to the Intel iGPU and whose NVIDIA GPU has no display outputs (no MUX
+# switch), xe binds the iGPU and scans out the frames NVK draws on the NVIDIA
+# GPU. Needs NVK, which draws; xe only shows.
+xe = ["nvk", "stela-drivers/xe-port", "stela-loader/xe-port"]
 
 [dependencies]
 stela-linux = { path = "../stela-linux", features = ["kernel"] }

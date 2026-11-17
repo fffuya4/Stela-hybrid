@@ -221,7 +221,7 @@ jobs:
         env:
           STELA_RELEASE: "1"
         run: |
-          cargo xtask boot build --release
+          cargo xtask boot build --release --xe
           echo "Vulkan drivers: $(paste -sd, target/gpu/nvk/vulkan-drivers)" >> "$GITHUB_STEP_SUMMARY"
           efi=target/boot/x86_64-unknown-uefi/release/stela-deploy.efi
           [[ "$(head -c 2 "$efi")" == MZ ]] || { echo "::error::$efi is not a PE image"; exit 1; }
@@ -242,16 +242,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # glibc 2.35: Ubuntu 22.04, Debian 12, Fedora 36 and newer.
-          - os: ubuntu-22.04
-            platform: linux-x86_64
-            targets: x86_64-unknown-linux-gnu
+          # Hybrid-GPU fork: the Windows tool only.
           - os: windows-2025
             platform: windows-x86_64
             targets: x86_64-pc-windows-msvc
-          - os: macos-26
-            platform: macos-universal
-            targets: aarch64-apple-darwin x86_64-apple-darwin
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
@@ -308,7 +302,7 @@ jobs:
         run: |
           export STELA_EFI="$PWD/efi/stela.efi"
           for target in ${{ matrix.targets }}; do
-            cargo build --release --locked -p stela-cli --target "$target"
+            cargo build --release --locked -p stela-cli --features xe-port --target "$target"
           done
           mkdir -p "$ARCHIVE"
           case "$RUNNER_OS" in
@@ -375,7 +369,7 @@ jobs:
           VERSION: ${{ needs.version.outputs.version }}
         run: |
           count="$(ls dist | wc -l)"
-          [[ "$count" == 4 ]] || { echo "::error::expected 3 archives and the source, found $count: $(ls dist)"; exit 1; }
+          [[ "$count" == 2 ]] || { echo "::error::expected the Windows archive and the source, found $count: $(ls dist)"; exit 1; }
           (cd dist && sha256sum -- * > SHA256SUMS && cat SHA256SUMS)
           # The template's Changes section is empty: it is written by hand
           # on the published release.
