@@ -1,0 +1,26 @@
+From 00a6cc37b28273104f288816101525341af371eb Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 17 Nov 2026 21:09:51 +0000
+Subject: [PATCH] fix(xe): name the Video BIOS Table firmware by default
+
+Stela's boot reads the Video BIOS Table from the GPU's ACPI OpRegion and serves it as the firmware image intel/vbt.bin. It named that image on the kernel command line (xe.vbt_firmware=), but the command line is parsed before xe's parameter table exists, so Linux refused it as an unknown parameter and the GPU start failed with ENOENT. Default the display code's vbt_firmware parameter to the name instead; a boot that has no table serves no such image, and intel_bios.c then falls back to its other sources as before.
+---
+ drivers/gpu/drm/i915/display/intel_display_params.h | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/i915/display/intel_display_params.h b/drivers/gpu/drm/i915/display/intel_display_params.h
+index 16759e9..cce0dff 100644
+--- a/drivers/gpu/drm/i915/display/intel_display_params.h
++++ b/drivers/gpu/drm/i915/display/intel_display_params.h
+@@ -24,7 +24,7 @@ struct drm_printer;
+  */
+ #define INTEL_DISPLAY_PARAMS_FOR_EACH(param) \
+ 	param(char *, dmc_firmware_path, NULL, 0400) \
+-	param(char *, vbt_firmware, NULL, 0400) \
++	param(char *, vbt_firmware, "intel/vbt.bin", 0400) \
+ 	param(int, lvds_channel_mode, 0, 0400) \
+ 	param(int, panel_use_ssc, -1, 0600) \
+ 	param(int, vbt_sdvo_panel_type, -1, 0400) \
+-- 
+2.43.0
+

@@ -185,9 +185,14 @@ static XE: Before = Before {
             firmware: select_firmware(&inventory, &name, catalog, table.map(|table| (table, VBT)))?,
             identity: None,
             chip: recipes::intel_gpu_platform(adapter.device),
-            // The display code asks the firmware service for the table this
-            // parameter names before it looks anywhere else (`intel_bios.c`).
-            parameters: table.map(|_| format!("xe.vbt_firmware={VBT}")),
+            // The display code asks the firmware service for the table named
+            // by its `vbt_firmware` parameter before it looks anywhere else
+            // (`intel_bios.c`). Linux parses the command line before xe's
+            // parameters exist and refuses `xe.vbt_firmware=` as unknown, so
+            // Stela's Linux patch gives the parameter that name as its
+            // default (`0215-name-the-vbt-firmware.patch`) and nothing is
+            // passed here.
+            parameters: None,
             searched: chipset_bridges(&observed),
         })
     },
