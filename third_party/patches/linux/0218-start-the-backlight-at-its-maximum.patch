@@ -1,0 +1,27 @@
+From a5f97c779b1fed6613cd1f5f203c75274a5fd6f8 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 21 Nov 2026 11:26:10 +0000
+Subject: [PATCH] fix(xe): start a panel's backlight at its maximum, not its
+ minimum
+
+When nothing has set a backlight level yet, the panel is enabled at its minimum, about 2% of the PWM period on this laptop's panel, and a desktop raises it afterwards. Stela's boot has no desktop, and the brightness its ACPI _BCM sets is the firmware's, which the display driver applies on an ASLE interrupt that Stela does not route, so the panel stays almost dark for the whole boot. Start at the maximum instead, as the driver did before it started at the minimum, which is the right answer where nothing is going to raise it.
+---
+ drivers/gpu/drm/i915/display/intel_backlight.c | 2 +-
+ 1 file changed, 1 insertion(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/i915/display/intel_backlight.c b/drivers/gpu/drm/i915/display/intel_backlight.c
+index b128896..52c9e78 100644
+--- a/drivers/gpu/drm/i915/display/intel_backlight.c
++++ b/drivers/gpu/drm/i915/display/intel_backlight.c
+@@ -779,7 +779,7 @@ static void __intel_backlight_enable(const struct intel_crtc_state *crtc_state,
+ 	WARN_ON(panel->backlight.max == 0);
+ 
+ 	if (panel->backlight.level < panel->backlight.min) {
+-		panel->backlight.level = panel->backlight.min;
++		panel->backlight.level = panel->backlight.max;
+ 		if (panel->backlight.device)
+ 			panel->backlight.device->props.brightness =
+ 				scale_hw_to_user(connector,
+-- 
+2.43.0
+
