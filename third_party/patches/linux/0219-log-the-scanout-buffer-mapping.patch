@@ -1,0 +1,91 @@
+From 3d83993624bcdce14a6e26232767e52d5b39ad3a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 21 Nov 2026 16:19:06 +0000
+Subject: [PATCH] xe: log the pages and GGTT entries of a scanout buffer
+
+Stela's Intel display shows pieces of a frame at the wrong rows. Print, for each scanout buffer, the runs of physical pages its CPU mapping is made of and the runs of addresses its GGTT entries hold, so the two can be compared in the boot log.
+---
+ drivers/gpu/drm/xe/xe_ggtt.c | 58 +++++++++++++++++++++++++++++++++---
+ 1 file changed, 54 insertions(+), 4 deletions(-)
+
+diff --git a/drivers/gpu/drm/xe/xe_ggtt.c b/drivers/gpu/drm/xe/xe_ggtt.c
+index a351c57..46ac9e1 100644
+--- a/drivers/gpu/drm/xe/xe_ggtt.c
++++ b/drivers/gpu/drm/xe/xe_ggtt.c
+@@ -13,6 +13,7 @@
+ #include <drm/drm_drv.h>
+ #include <drm/drm_managed.h>
+ #include <drm/intel/i915_drm.h>
++#include <drm/ttm/ttm_tt.h>
+ #include <generated/xe_wa_oob.h>
+ 
+ #include "regs/xe_gt_regs.h"
+@@ -697,12 +698,61 @@ static void xe_ggtt_map_bo(struct xe_ggtt *ggtt, struct xe_ggtt_node *node,
+ 	end = start + xe_bo_size(bo);
+ 
+ 	if (!xe_bo_is_vram(bo) && !xe_bo_is_stolen(bo)) {
+-		xe_assert(xe_bo_device(bo), bo->ttm.ttm);
++		struct xe_device *xe = xe_bo_device(bo);
++		bool trace = bo->flags & XE_BO_FLAG_SCANOUT;
++		u64 run_dma = 0, run_at = 0, run_len = 0;
++
++		xe_assert(xe, bo->ttm.ttm);
++
++		if (trace) {
++			/* The pages the CPU mapping of this buffer is made of, as runs of
++			 * consecutive physical addresses: the other side of the GGTT
++			 * entries below. */
++			struct ttm_tt *tt = bo->ttm.ttm;
++			unsigned long i, pfn_start = 0, pfn_len = 0;
++
++			drm_info(&xe->drm, "scanout bo %p: %lu pages, ggtt %llx size %zx\n",
++				 bo, (unsigned long)tt->num_pages, start, xe_bo_size(bo));
++			for (i = 0; i < tt->num_pages; i++) {
++				unsigned long pfn = page_to_pfn(tt->pages[i]);
++
++				if (pfn_len && pfn == pfn_start + pfn_len) {
++					pfn_len++;
++					continue;
++				}
++				if (pfn_len)
++					drm_info(&xe->drm, "scanout bo %p: cpu pages at %llx: pfn %lx x %lu\n",
++						 bo, (u64)(i - pfn_len) << 12, pfn_start, pfn_len);
++				pfn_start = pfn;
++				pfn_len = 1;
++			}
++			if (pfn_len)
++				drm_info(&xe->drm, "scanout bo %p: cpu pages at %llx: pfn %lx x %lu\n",
++					 bo, (u64)(i - pfn_len) << 12, pfn_start, pfn_len);
++		}
+ 
+ 		for (xe_res_first_sg(xe_bo_sg(bo), 0, xe_bo_size(bo), &cur);
+-		     cur.remaining; xe_res_next(&cur, XE_PAGE_SIZE))
+-			ggtt->pt_ops->ggtt_set_pte(ggtt, end - cur.remaining,
+-						   pte | xe_res_dma(&cur));
++		     cur.remaining; xe_res_next(&cur, XE_PAGE_SIZE)) {
++			u64 dma = xe_res_dma(&cur);
++
++			if (trace) {
++				/* The same as runs of the addresses the GGTT entries hold. */
++				if (run_len && dma == run_dma + run_len) {
++					run_len += XE_PAGE_SIZE;
++				} else {
++					if (run_len)
++						drm_info(&xe->drm, "scanout bo %p: ggtt entries at %llx: dma %llx x %llx\n",
++							 bo, run_at, run_dma, run_len);
++					run_dma = dma;
++					run_at = xe_bo_size(bo) - cur.remaining;
++					run_len = XE_PAGE_SIZE;
++				}
++			}
++			ggtt->pt_ops->ggtt_set_pte(ggtt, end - cur.remaining, pte | dma);
++		}
++		if (trace && run_len)
++			drm_info(&xe->drm, "scanout bo %p: ggtt entries at %llx: dma %llx x %llx\n",
++				 bo, run_at, run_dma, run_len);
+ 	} else {
+ 		/* Prepend GPU offset */
+ 		pte |= vram_region_gpu_offset(bo->ttm.resource);
+-- 
+2.43.0
+
