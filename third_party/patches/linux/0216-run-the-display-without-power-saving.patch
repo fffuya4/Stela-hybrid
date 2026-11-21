@@ -1,0 +1,47 @@
+From b8cd146ab1ddb65cc5383016bfea9720cb3756d0 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 21 Nov 2026 06:26:47 +0000
+Subject: [PATCH 1/2] fix(xe): run the display without its power-saving
+ features by default
+
+Stela writes each frame into the scanout buffer with the CPU and flips it, with no frontbuffer tracking, and the guest can leave the display idle for a long while at start. The display's low power states (DC states, framebuffer compression, panel self refresh and replay, and SAGV's memory clock changes) all assume the frontbuffer tracking and the idle behaviour of a Linux desktop, and when one misbehaves a laptop panel flickers and goes dark. Default them off, as i915.enable_dc=0, enable_fbc=0, enable_psr=0, enable_panel_replay=0 and enable_sagv=0 do on the command line, which Stela's Linux refuses as unknown parameters (see the vbt_firmware default).
+---
+ drivers/gpu/drm/i915/display/intel_display_params.h | 10 +++++-----
+ 1 file changed, 5 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/gpu/drm/i915/display/intel_display_params.h b/drivers/gpu/drm/i915/display/intel_display_params.h
+index cce0dff..febadd2 100644
+--- a/drivers/gpu/drm/i915/display/intel_display_params.h
++++ b/drivers/gpu/drm/i915/display/intel_display_params.h
+@@ -28,11 +28,11 @@ struct drm_printer;
+ 	param(int, lvds_channel_mode, 0, 0400) \
+ 	param(int, panel_use_ssc, -1, 0600) \
+ 	param(int, vbt_sdvo_panel_type, -1, 0400) \
+-	param(int, enable_dc, -1, 0400) \
++	param(int, enable_dc, 0, 0400) \
+ 	param(bool, enable_dpt, true, 0400) \
+ 	param(bool, enable_dsb, true, 0600) \
+ 	param(bool, enable_flipq, false, 0600) \
+-	param(bool, enable_sagv, true, 0600) \
++	param(bool, enable_sagv, false, 0600) \
+ 	param(int, disable_power_well, -1, 0400) \
+ 	param(bool, enable_ips, true, 0600) \
+ 	param(int, invert_brightness, 0, 0600) \
+@@ -44,10 +44,10 @@ struct drm_printer;
+ 	param(bool, verbose_state_checks, true, 0400) \
+ 	param(bool, nuclear_pageflip, false, 0400) \
+ 	param(bool, enable_dp_mst, true, 0600) \
+-	param(int, enable_fbc, -1, 0600) \
+-	param(int, enable_psr, -1, 0600) \
++	param(int, enable_fbc, 0, 0600) \
++	param(int, enable_psr, 0, 0600) \
+ 	param(bool, enable_dc_balance, false, 0600) \
+-	param(int, enable_panel_replay, -1, 0600) \
++	param(int, enable_panel_replay, 0, 0600) \
+ 	param(bool, psr_safest_params, false, 0400) \
+ 	param(bool, enable_psr2_sel_fetch, true, 0400) \
+ 	param(int, enable_dmc_wl, -1, 0400) \
+-- 
+2.43.0
+
+

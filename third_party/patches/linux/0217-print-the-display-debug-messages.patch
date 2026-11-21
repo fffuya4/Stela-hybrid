@@ -1,0 +1,31 @@
+From bbeb1c1290563e4ff9e6b76914a34ed236baffea Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 21 Nov 2026 06:26:47 +0000
+Subject: [PATCH 2/2] drm: print the driver, KMS and DisplayPort debug messages
+ by default
+
+Stela's Linux refuses the drm.debug kernel parameter as unknown, so the boot log carries no display debug output. Default the mask to the categories that say how a panel's link and modes came up.
+---
+ drivers/gpu/drm/drm_print.c | 6 +++++-
+ 1 file changed, 5 insertions(+), 1 deletion(-)
+
+diff --git a/drivers/gpu/drm/drm_print.c b/drivers/gpu/drm/drm_print.c
+index ded9461..5ac323c 100644
+--- a/drivers/gpu/drm/drm_print.c
++++ b/drivers/gpu/drm/drm_print.c
+@@ -40,7 +40,11 @@
+  * __drm_debug: Enable debug output.
+  * Bitmask of DRM_UT_x. See include/drm/drm_print.h for details.
+  */
+-unsigned long __drm_debug;
++/* Driver (0x2), KMS (0x4) and DisplayPort (0x100) messages: what the display
++ * code says about its modes, links and panels, which Stela's boot log shows
++ * as kernel debug lines. Not atomic (0x10) or vblank (0x20), which a message
++ * per flip would flood the log with. */
++unsigned long __drm_debug = 0x106;
+ EXPORT_SYMBOL(__drm_debug);
+ 
+ MODULE_PARM_DESC(debug, "Enable debug output, where each bit enables a debug category.\n"
+-- 
+2.43.0
+
