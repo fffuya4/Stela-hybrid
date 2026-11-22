@@ -161,18 +161,16 @@ impl Scanout for KmsScanout {
             }
             Ok(())
         };
-        let prepared = display.prepare_rows(None, &mut counting)?;
+        display.paint_displayed(&mut counting)?;
         let frame = DIAGNOSTIC_FRAMES.fetch_add(1, Ordering::Relaxed);
         if frame < 60 || frame % 256 == 0 {
             output::arguments(format_args!(
-                "SCANOUT frame {frame}: producer damage {asked:?}, every row copied: {copied} rows, \
-                 {black} wholly black\n"
+                "SCANOUT frame {frame} (painted into the displayed buffer, no flip): producer \
+                 damage {asked:?}, every row copied: {copied} rows, {black} wholly black\n"
             ));
         }
         console::release();
-        let presented = prepared.present();
-        self.blank &= presented.is_err();
-        finish_present(display, presented)?;
+        self.blank = false;
         Ok(true)
     }
 

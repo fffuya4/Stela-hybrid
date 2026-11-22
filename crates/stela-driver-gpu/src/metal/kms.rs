@@ -1897,6 +1897,45 @@ impl<D: Drm> Display<D> {
         Ok(PreparedFrame(self))
     }
 
+    /// Diagnostic: write every row of a frame straight into the buffer the
+    /// engine reads, with no hidden buffer and no flip, so no buffer is mapped
+    /// into or unmapped from the engine's page table while it shows frames.
+    /// The picture can tear, but a flip's mapping is not what shows it.
+    pub fn paint_displayed(
+        &mut self,
+        mut fill: impl FnMut(usize, &mut [u8]) -> Result<(), Refusal>,
+    ) -> Result<(), Refusal> {
+        let height = self.height as usize;
+        let bytes = self.width as usize * BYTES_PER_PIXEL as usize;
+        let mut row = core::mem::take(&mut self.row);
+        if row.len() != bytes {
+            row.clear();
+            row.try_reserve_exact(bytes)
+                .map_err(|_| refuse!("could not allocate a scanout row"))?;
+            row.resize(bytes, 0);
+        }
+        let mut filled = Ok(());
+        for y in 0..height {
+            filled = fill(y, &mut row);
+            if filled.is_err() {
+                break;
+            }
+            let target = &self.buffers[0];
+            // SAFETY: `fill` gave one full row and `y` is below the height,
+            // so the mapping's pitch holds it; the engine reads this buffer
+            // too, which tears the picture at worst.
+            unsafe {
+                ptr::copy_nonoverlapping(
+                    row.as_ptr(),
+                    target.pixels.as_ptr().add(y * target.pitch),
+                    row.len(),
+                );
+            }
+        }
+        self.row = row;
+        filled
+    }
+
     /// Whether a frame waits in the hidden buffer for its flip to be
     /// requested, or an output that follows the first waits for its flip
     /// to the newest buffer ([`Self::flush`]).
