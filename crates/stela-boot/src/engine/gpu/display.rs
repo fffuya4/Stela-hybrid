@@ -146,7 +146,29 @@ impl Scanout for KmsScanout {
             self.look();
             return Ok(true);
         };
-        let prepared = display.prepare_rows(damage, fill)?;
+        // Diagnostic: copy every row of every frame, not only the rows the
+        // producer's damage and the buffers' stale ranges name, so the hidden
+        // buffer never depends on what an earlier frame left in it, and count
+        // the rows the producer gave wholly black (sampled every 16th byte).
+        let asked = damage;
+        let mut copied = 0usize;
+        let mut black = 0usize;
+        let mut counting = |y: usize, row: &mut [u8]| -> Result<()> {
+            fill(y, &mut *row)?;
+            copied += 1;
+            if row.iter().step_by(16).all(|&byte| byte == 0) {
+                black += 1;
+            }
+            Ok(())
+        };
+        let prepared = display.prepare_rows(None, &mut counting)?;
+        let frame = DIAGNOSTIC_FRAMES.fetch_add(1, Ordering::Relaxed);
+        if frame < 60 || frame % 256 == 0 {
+            output::arguments(format_args!(
+                "SCANOUT frame {frame}: producer damage {asked:?}, every row copied: {copied} rows, \
+                 {black} wholly black\n"
+            ));
+        }
         console::release();
         let presented = prepared.present();
         self.blank &= presented.is_err();
@@ -393,6 +415,8 @@ fn report_watched(name: &str, display: &Display<Node>, watched: Watched) {
 /// Whether a display taken shows on a laptop's built-in panel, whose
 /// backlight is set apart from the picture ([`panel_shown`]).
 static PANEL: AtomicBool = AtomicBool::new(false);
+/// Frames the scanout diagnostic of [`KmsScanout::try_present_rows`] has seen.
+static DIAGNOSTIC_FRAMES: AtomicUsize = AtomicUsize::new(0);
 
 /// Whether a GPU's display shows on a built-in panel (eDP, LVDS or DSI).
 pub(in crate::engine) fn panel_shown() -> bool {
