@@ -1,32 +1,33 @@
-From 3d83993624bcdce14a6e26232767e52d5b39ad3a Mon Sep 17 00:00:00 2001
+From 683b85310d8ea3e5499c6436facc296c0680102d Mon Sep 17 00:00:00 2001
 From: Claude <noreply@anthropic.com>
 Date: Sat, 21 Nov 2026 16:19:06 +0000
 Subject: [PATCH] xe: log the pages and GGTT entries of a scanout buffer
 
 Stela's Intel display shows pieces of a frame at the wrong rows. Print, for each scanout buffer, the runs of physical pages its CPU mapping is made of and the runs of addresses its GGTT entries hold, so the two can be compared in the boot log.
 ---
- drivers/gpu/drm/xe/xe_ggtt.c | 58 +++++++++++++++++++++++++++++++++---
- 1 file changed, 54 insertions(+), 4 deletions(-)
+ drivers/gpu/drm/xe/xe_ggtt.c | 59 +++++++++++++++++++++++++++++++++---
+ 1 file changed, 55 insertions(+), 4 deletions(-)
 
 diff --git a/drivers/gpu/drm/xe/xe_ggtt.c b/drivers/gpu/drm/xe/xe_ggtt.c
-index a351c57..46ac9e1 100644
+index a351c57..66318df 100644
 --- a/drivers/gpu/drm/xe/xe_ggtt.c
 +++ b/drivers/gpu/drm/xe/xe_ggtt.c
-@@ -13,6 +13,7 @@
+@@ -13,6 +13,8 @@
  #include <drm/drm_drv.h>
  #include <drm/drm_managed.h>
  #include <drm/intel/i915_drm.h>
 +#include <drm/ttm/ttm_tt.h>
++#include <linux/sizes.h>
  #include <generated/xe_wa_oob.h>
  
  #include "regs/xe_gt_regs.h"
-@@ -697,12 +698,61 @@ static void xe_ggtt_map_bo(struct xe_ggtt *ggtt, struct xe_ggtt_node *node,
+@@ -697,12 +699,61 @@ static void xe_ggtt_map_bo(struct xe_ggtt *ggtt, struct xe_ggtt_node *node,
  	end = start + xe_bo_size(bo);
  
  	if (!xe_bo_is_vram(bo) && !xe_bo_is_stolen(bo)) {
 -		xe_assert(xe_bo_device(bo), bo->ttm.ttm);
 +		struct xe_device *xe = xe_bo_device(bo);
-+		bool trace = bo->flags & XE_BO_FLAG_SCANOUT;
++		bool trace = (bo->flags & XE_BO_FLAG_FORCE_WC) && xe_bo_size(bo) >= SZ_1M;
 +		u64 run_dma = 0, run_at = 0, run_len = 0;
 +
 +		xe_assert(xe, bo->ttm.ttm);
