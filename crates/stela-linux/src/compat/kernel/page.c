@@ -681,6 +681,17 @@ void *stela_linux_page_to_virt(const struct page *page)
     return extent->cpu_base + ((index - extent->first) << PAGE_SHIFT);
 }
 
+void *stela_linux_pfn_cpu_address(unsigned long pfn)
+{
+    if (stela_linux_kernel_hosted() || !catalog.pages || pfn > (U64_MAX >> PAGE_SHIFT))
+        return NULL;
+    size_t index = physical_slot((phys_addr_t)pfn << PAGE_SHIFT);
+    if (index == NO_INDEX || !catalog.state[index].live)
+        return NULL;
+    const struct registered_extent *extent = index_extent(index);
+    return extent->cpu_base + ((index - extent->first) << PAGE_SHIFT);
+}
+
 phys_addr_t stela_linux_page_to_phys(const struct page *page)
 {
     if (stela_linux_kernel_hosted())

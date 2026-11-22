@@ -56,6 +56,9 @@ extern bool __virt_addr_valid(unsigned long kaddr);
 #define virt_addr_valid(kaddr) __virt_addr_valid((unsigned long) (kaddr))
 struct page *stela_linux_virt_to_page(unsigned long address);
 void *stela_linux_page_to_virt(const struct page *page);
+/* The CPU address of frame pfn where it is a live page of the catalogue, NULL
+ * where it is not RAM Stela's Linux owns (a device's memory). */
+void *stela_linux_pfn_cpu_address(unsigned long pfn);
 phys_addr_t stela_linux_page_to_phys(const struct page *page);
 struct page *stela_linux_phys_to_page(phys_addr_t address);
 #define virt_to_page(kaddr)	stela_linux_virt_to_page((unsigned long)(kaddr))

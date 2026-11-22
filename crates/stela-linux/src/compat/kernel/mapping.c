@@ -427,6 +427,29 @@ vm_fault_t vmf_insert_pfn(struct vm_area_struct *vma, unsigned long addr, unsign
 	return vmf_insert_pfn_prot(vma, addr, pfn, vma->vm_page_prot);
 }
 
+/* A page mapped write-combining or uncached is read by a device straight from
+ * memory, but Linux zeroed it, and may have written it, through the write-back
+ * view of the catalogue, and those lines stay dirty in the CPU's caches. The
+ * write-combining view's writes bypass them, so when the caches write them back
+ * later, they put the zeros over a frame: a screen that shows only the part of
+ * each large chunk whose lines were written back before. Write the lines of the
+ * page back and drop them before it is mapped this way, as Linux's
+ * set_pages_array_wc does for a page it changes to write-combining. */
+static void flush_for_cache_type(unsigned long pfn, unsigned long prot)
+{
+	void *cpu;
+
+	if (!(prot & (_PAGE_PWT | _PAGE_PCD)))
+		return;
+	cpu = stela_linux_pfn_cpu_address(pfn);
+	if (!cpu)
+		return;
+	asm volatile("mfence" ::: "memory");
+	for (unsigned int offset = 0; offset < PAGE_SIZE; offset += 64)
+		asm volatile("clflush %0" : : "m"(*((volatile char *)cpu + offset)) : "memory");
+	asm volatile("mfence" ::: "memory");
+}
+
 vm_fault_t vmf_insert_pfn_prot(struct vm_area_struct *vma, unsigned long addr, unsigned long pfn,
 			       pgprot_t pgprot)
 {
@@ -435,6 +458,7 @@ vm_fault_t vmf_insert_pfn_prot(struct vm_area_struct *vma, unsigned long addr, u
 
 	if (addr < vma->vm_start || addr >= vma->vm_end)
 		return VM_FAULT_SIGBUS;
+	flush_for_cache_type(pfn, pgprot_val(pgprot));
 	int error = owner->services->map_user(owner->context, mapping->space, addr, pfn,
 					      pgprot_val(pgprot));
 
