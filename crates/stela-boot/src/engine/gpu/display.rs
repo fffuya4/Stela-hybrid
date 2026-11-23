@@ -159,6 +159,21 @@ impl Scanout for KmsScanout {
             if row.iter().step_by(16).all(|&byte| byte == 0) {
                 black += 1;
             }
+            // Diagnostic: replace the row with its own number, in binary, so
+            // the screen shows which row of memory it reads. The first block
+            // (160 pixels) is always lit, the marker that the row was read at
+            // all; the next eleven blocks are the bits of `y`, highest first,
+            // lit for a one and dark for a zero.
+            let length = row.len();
+            row.fill(0);
+            for block in 0..12usize {
+                let lit = block == 0 || (y >> (11 - block)) & 1 == 1;
+                let start = block * 640;
+                let end = (start + 640).min(length);
+                if lit && start < end {
+                    row[start..end].fill(0xff);
+                }
+            }
             Ok(())
         };
         display.paint_displayed(&mut counting)?;
