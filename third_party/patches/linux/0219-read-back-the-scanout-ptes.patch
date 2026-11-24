@@ -1,0 +1,72 @@
+From f761441f9b14e73e87c063237d692d6af52aec9a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 24 Nov 2026 11:19:11 +0000
+Subject: [PATCH] xe: read back a scanout buffer's GGTT entries and log big
+ clears
+
+Stela's Intel display shows the first 512 KiB of a scanout buffer at several screen heights and nothing of the rest, while the buffer's memory is whole. Read a sample of the GGTT entries back after they are written, which also waits for the posted writes, and say which differ from what was written; log every clear of a megabyte or more, so a later overwrite of the entries shows.
+---
+ drivers/gpu/drm/xe/xe_ggtt.c | 33 +++++++++++++++++++++++++++++++++
+ 1 file changed, 33 insertions(+)
+
+diff --git a/drivers/gpu/drm/xe/xe_ggtt.c b/drivers/gpu/drm/xe/xe_ggtt.c
+index a351c57..dde0bbf 100644
+--- a/drivers/gpu/drm/xe/xe_ggtt.c
++++ b/drivers/gpu/drm/xe/xe_ggtt.c
+@@ -13,6 +13,7 @@
+ #include <drm/drm_drv.h>
+ #include <drm/drm_managed.h>
+ #include <drm/intel/i915_drm.h>
++#include <linux/sizes.h>
+ #include <generated/xe_wa_oob.h>
+ 
+ #include "regs/xe_gt_regs.h"
+@@ -272,6 +273,9 @@ static void xe_ggtt_clear(struct xe_ggtt *ggtt, u64 start, u64 size)
+ 	else
+ 		scratch_pte = 0;
+ 
++	if (size >= SZ_1M)
++		drm_info(&tile_to_xe(ggtt->tile)->drm, "ggtt clear: %llx size %llx\n", start, size);
++
+ 	while (start < end) {
+ 		ggtt->pt_ops->ggtt_set_pte(ggtt, start, scratch_pte);
+ 		start += XE_PAGE_SIZE;
+@@ -703,6 +707,35 @@ static void xe_ggtt_map_bo(struct xe_ggtt *ggtt, struct xe_ggtt_node *node,
+ 		     cur.remaining; xe_res_next(&cur, XE_PAGE_SIZE))
+ 			ggtt->pt_ops->ggtt_set_pte(ggtt, end - cur.remaining,
+ 						   pte | xe_res_dma(&cur));
++
++		if ((bo->flags & XE_BO_FLAG_FORCE_WC) && xe_bo_size(bo) >= SZ_1M) {
++			/* Read the entries back, which also waits for the writes to
++			 * land, and say which differ from what was written. */
++			static const unsigned int samples[] = {
++				0, 1, 63, 64, 127, 128, 129, 255, 256, 511, 512, 1023, 1024, 1025, 2000, 2024
++			};
++			struct xe_res_cursor probe;
++			unsigned int i, bad = 0;
++
++			drm_info(&xe_bo_device(bo)->drm, "scanout ptes: bo %p ggtt %llx size %zx\n",
++				 bo, start, xe_bo_size(bo));
++			for (i = 0; i < ARRAY_SIZE(samples); i++) {
++				u64 want, got;
++
++				if ((u64)samples[i] * XE_PAGE_SIZE >= xe_bo_size(bo))
++					continue;
++				xe_res_first_sg(xe_bo_sg(bo), (u64)samples[i] * XE_PAGE_SIZE,
++						XE_PAGE_SIZE, &probe);
++				want = pte | xe_res_dma(&probe);
++				got = ggtt->pt_ops->ggtt_get_pte(ggtt, start + (u64)samples[i] * XE_PAGE_SIZE);
++				if (want != got)
++					bad++;
++				drm_info(&xe_bo_device(bo)->drm,
++					 "scanout pte %u: wrote %llx read %llx%s\n", samples[i], want, got,
++					 want == got ? "" : " MISMATCH");
++			}
++			drm_info(&xe_bo_device(bo)->drm, "scanout ptes: %u of the samples differ\n", bad);
++		}
+ 	} else {
+ 		/* Prepend GPU offset */
+ 		pte |= vram_region_gpu_offset(bo->ttm.resource);
+-- 
+2.43.0
+
