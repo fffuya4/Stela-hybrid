@@ -159,20 +159,22 @@ impl Scanout for KmsScanout {
             if row.iter().step_by(16).all(|&byte| byte == 0) {
                 black += 1;
             }
-            // Diagnostic: replace the row with its own number, in binary, so
-            // the screen shows which row of memory it reads. The first block
-            // (160 pixels) is always lit, the marker that the row was read at
-            // all; the next eleven blocks are the bits of `y`, highest first,
-            // lit for a one and dark for a zero.
+            // Diagnostic: colour every pixel by the part of the buffer it is
+            // stored in, so the screen shows which memory the engine reads.
+            // The buffer is cut into 64 KiB pieces: the hue is the piece's
+            // number divided by eight (sixteen hues, so 512 KiB per hue), and
+            // the brightness is the piece's number modulo eight. Blank
+            // (black) is memory that holds nothing.
             let length = row.len();
-            row.fill(0);
-            for block in 0..12usize {
-                let lit = block == 0 || (y >> (11 - block)) & 1 == 1;
-                let start = block * 640;
-                let end = (start + 640).min(length);
-                if lit && start < end {
-                    row[start..end].fill(0xff);
-                }
+            let base = y * length;
+            for (x, pixel) in row.chunks_exact_mut(4).enumerate() {
+                let piece = (base + x * 4) >> 16;
+                let [red, green, blue] = DIAGNOSTIC_HUES[(piece >> 3) & 15];
+                let level = 40 + 30 * (piece & 7) as u32;
+                pixel[0] = (u32::from(blue) * level / 255) as u8;
+                pixel[1] = (u32::from(green) * level / 255) as u8;
+                pixel[2] = (u32::from(red) * level / 255) as u8;
+                pixel[3] = 0xff;
             }
             Ok(())
         };
@@ -430,6 +432,25 @@ fn report_watched(name: &str, display: &Display<Node>, watched: Watched) {
 static PANEL: AtomicBool = AtomicBool::new(false);
 /// Frames the scanout diagnostic of [`KmsScanout::try_present_rows`] has seen.
 static DIAGNOSTIC_FRAMES: AtomicUsize = AtomicUsize::new(0);
+/// The sixteen hues of the scanout diagnostic, as red, green and blue.
+const DIAGNOSTIC_HUES: [[u8; 3]; 16] = [
+    [255, 0, 0],
+    [255, 96, 0],
+    [255, 192, 0],
+    [192, 255, 0],
+    [96, 255, 0],
+    [0, 255, 0],
+    [0, 255, 96],
+    [0, 255, 192],
+    [0, 192, 255],
+    [0, 96, 255],
+    [0, 0, 255],
+    [96, 0, 255],
+    [192, 0, 255],
+    [255, 0, 192],
+    [255, 0, 96],
+    [255, 255, 255],
+];
 
 /// Whether a GPU's display shows on a built-in panel (eDP, LVDS or DSI).
 pub(in crate::engine) fn panel_shown() -> bool {
