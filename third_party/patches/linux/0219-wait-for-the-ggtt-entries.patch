@@ -1,0 +1,41 @@
+From a2d2499669f415662db3658103dbe65b49e11e0a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Wed, 25 Nov 2026 08:29:10 +0000
+Subject: [PATCH] xe: wait for the GGTT entries of a mapped buffer to land
+
+The GGTT entries of a buffer, and a clear of the table, are posted uncached writes. The display fetches the entries of a scanout buffer as soon as its plane is enabled, and xe does not read anything back after writing them, as it does in xe_ggtt_invalidate for the GuC ("Barrier for GGTT pages"). Where the writes are slow to land, as after a clear of the whole 4 GiB table, the display read scratch or stale entries for part of the buffer, and showed the first window of its pages at the wrong places. Read the last entry back after the clear and after the buffer's entries; a read cannot pass the posted writes before it.
+---
+ drivers/gpu/drm/xe/xe_ggtt.c | 10 ++++++++++
+ 1 file changed, 10 insertions(+)
+
+diff --git a/drivers/gpu/drm/xe/xe_ggtt.c b/drivers/gpu/drm/xe/xe_ggtt.c
+index a351c57..8d5aa33 100644
+--- a/drivers/gpu/drm/xe/xe_ggtt.c
++++ b/drivers/gpu/drm/xe/xe_ggtt.c
+@@ -276,6 +276,11 @@ static void xe_ggtt_clear(struct xe_ggtt *ggtt, u64 start, u64 size)
+ 		ggtt->pt_ops->ggtt_set_pte(ggtt, start, scratch_pte);
+ 		start += XE_PAGE_SIZE;
+ 	}
++
++	/* The writes above are posted: read the last entry back, which cannot pass
++	 * them, so that the whole clear has landed before anything is written over it. */
++	if (size)
++		(void)ggtt->pt_ops->ggtt_get_pte(ggtt, end - XE_PAGE_SIZE);
+ }
+ 
+ static void primelockdep(struct xe_ggtt *ggtt)
+@@ -712,6 +717,11 @@ static void xe_ggtt_map_bo(struct xe_ggtt *ggtt, struct xe_ggtt_node *node,
+ 			ggtt->pt_ops->ggtt_set_pte(ggtt, end - cur.remaining,
+ 						   pte + cur.start);
+ 	}
++
++	/* The entries above are posted writes, and the display begins to fetch them as
++	 * soon as the plane is enabled: read the last one back, which cannot pass the
++	 * writes before it, so that all of them have landed first. */
++	(void)ggtt->pt_ops->ggtt_get_pte(ggtt, end - XE_PAGE_SIZE);
+ }
+ 
+ /**
+-- 
+2.43.0
+
