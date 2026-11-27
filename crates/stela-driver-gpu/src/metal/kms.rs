@@ -810,16 +810,37 @@ fn rates_of(modes: &[ModeInfo], size: (u32, u32), fits: Fits<'_>) -> Vec<ModeInf
         .collect();
     rates.sort_by_key(|mode| core::cmp::Reverse(refresh(mode)));
     rates.dedup_by_key(|mode| refresh(mode));
-    rates
+    // Run no faster than [`REFRESH_CAP`] where the monitor offers a rate at
+    // or below it, and tell the guest of no others.
+    let slow: Vec<ModeInfo> = rates
+        .iter()
+        .copied()
+        .filter(|mode| refresh(mode) <= REFRESH_CAP)
+        .collect();
+    if slow.is_empty() { rates } else { slow }
 }
+
+/// The highest refresh, in millihertz, a monitor is run at while it offers
+/// one at or below it. A built-in panel at its 144 Hz leaves the display
+/// engine 6 microseconds a line to refill its buffer from memory, and
+/// underruns when the memory system stalls, as the power controller does
+/// when the memory's frequency point changes; at 60 Hz it has 14.
+const REFRESH_CAP: u32 = 61_000;
 
 fn mode_of(modes: &[ModeInfo], size: (u32, u32), fits: Fits<'_>) -> Option<ModeInfo> {
     let mut sized = modes.iter().filter(|mode| size_of_mode(mode) == size);
-    let fitting = sized
-        .clone()
-        .filter(|mode| mode.flags & INTERLACED == 0 && fits(size.0, size.1, refresh(mode)))
-        .rev()
-        .max_by_key(|mode| refresh(mode));
+    let pick = |capped: bool| {
+        sized
+            .clone()
+            .filter(|mode| {
+                mode.flags & INTERLACED == 0
+                    && fits(size.0, size.1, refresh(mode))
+                    && (!capped || refresh(mode) <= REFRESH_CAP)
+            })
+            .rev()
+            .max_by_key(|mode| refresh(mode))
+    };
+    let fitting = pick(true).or_else(|| pick(false));
     fitting.or_else(|| sized.next()).copied()
 }
 
@@ -1895,45 +1916,6 @@ impl<D: Drm> Display<D> {
         filled?;
         self.stale[2] = 0..0;
         Ok(PreparedFrame(self))
-    }
-
-    /// Diagnostic: write every row of a frame straight into the buffer the
-    /// engine reads, with no hidden buffer and no flip, so no buffer is mapped
-    /// into or unmapped from the engine's page table while it shows frames.
-    /// The picture can tear, but a flip's mapping is not what shows it.
-    pub fn paint_displayed(
-        &mut self,
-        mut fill: impl FnMut(usize, &mut [u8]) -> Result<(), Refusal>,
-    ) -> Result<(), Refusal> {
-        let height = self.height as usize;
-        let bytes = self.width as usize * BYTES_PER_PIXEL as usize;
-        let mut row = core::mem::take(&mut self.row);
-        if row.len() != bytes {
-            row.clear();
-            row.try_reserve_exact(bytes)
-                .map_err(|_| refuse!("could not allocate a scanout row"))?;
-            row.resize(bytes, 0);
-        }
-        let mut filled = Ok(());
-        for y in 0..height {
-            filled = fill(y, &mut row);
-            if filled.is_err() {
-                break;
-            }
-            let target = &self.buffers[0];
-            // SAFETY: `fill` gave one full row and `y` is below the height,
-            // so the mapping's pitch holds it; the engine reads this buffer
-            // too, which tears the picture at worst.
-            unsafe {
-                ptr::copy_nonoverlapping(
-                    row.as_ptr(),
-                    target.pixels.as_ptr().add(y * target.pitch),
-                    row.len(),
-                );
-            }
-        }
-        self.row = row;
-        filled
     }
 
     /// Whether a frame waits in the hidden buffer for its flip to be

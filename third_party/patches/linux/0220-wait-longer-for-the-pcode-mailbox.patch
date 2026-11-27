@@ -1,0 +1,54 @@
+From d5d3b1c775ba6cce0f6505ca9e05970112b6053f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 27 Nov 2026 10:25:13 +0000
+Subject: [PATCH] xe: keep trying a busy PCODE mailbox for about two seconds
+
+The PCODE mailbox's READY bit can stay busy for much longer than the 50 ms the request polls it for, as the display's first scanout starts and the memory's QGV point changes. The request then fails with -ETIMEDOUT (-110) as the mailbox's own status and the display underruns. Retry the poll in tries of 50 ms for up to about two seconds, and log how many tries it took and the final status.
+---
+ drivers/gpu/drm/xe/xe_pcode.c | 23 ++++++++++++++++++-----
+ 1 file changed, 18 insertions(+), 5 deletions(-)
+
+diff --git a/drivers/gpu/drm/xe/xe_pcode.c b/drivers/gpu/drm/xe/xe_pcode.c
+index dc66d0c..24de901 100644
+--- a/drivers/gpu/drm/xe/xe_pcode.c
++++ b/drivers/gpu/drm/xe/xe_pcode.c
+@@ -194,7 +194,7 @@ int xe_pcode_request(struct xe_tile *tile, u32 mbox, u32 request,
+ 		     u32 reply_mask, u32 reply, int timeout_base_ms)
+ {
+ 	u32 status;
+-	int ret;
++	int ret, tries;
+ 
+ 	xe_tile_assert(tile, timeout_base_ms <= 3);
+ 
+@@ -217,10 +217,23 @@ int xe_pcode_request(struct xe_tile *tile, u32 mbox, u32 request,
+ 	 */
+ 	drm_err(&tile_to_xe(tile)->drm,
+ 		"PCODE timeout, retrying with preemption disabled\n");
+-	preempt_disable();
+-	ret = pcode_try_request(tile, mbox, request, reply_mask, reply, &status,
+-				true, 50 * 1000, true);
+-	preempt_enable();
++	/*
++	 * Under Stela the mailbox can stay busy for far longer than 50 ms
++	 * (its READY bit never clears), as the display's first scanout starts
++	 * and the memory's frequency point changes. Keep trying for up to
++	 * about two seconds, in tries of 50 ms.
++	 */
++	for (tries = 1; tries <= 40; tries++) {
++		preempt_disable();
++		ret = pcode_try_request(tile, mbox, request, reply_mask, reply, &status,
++					true, 50 * 1000, true);
++		preempt_enable();
++		if (!ret)
++			break;
++	}
++	drm_info(&tile_to_xe(tile)->drm,
++		 "PCODE request on mailbox %#x %s after %d tries of 50 ms, status %d\n",
++		 mbox, ret ? "gave up" : "answered", tries > 40 ? 40 : tries, (int)status);
+ 
+ out:
+ 	mutex_unlock(&tile->pcode.lock);
+-- 
+2.43.0
+
