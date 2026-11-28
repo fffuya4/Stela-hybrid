@@ -1,0 +1,42 @@
+From 991f8229ba94a5feec57e2080acba8832738d94e Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 28 Nov 2026 06:30:58 +0000
+Subject: [PATCH] i915/display: do not relax the QGV points after a modeset
+
+Relaxing the QGV points after the planes are enabled has the PCODE change the memory frequency point, which stalls memory for about 90 ms under Stela, while the display scans out. The display underruns and keeps a stripe of the wrong memory. Leave the points restricted: it costs only some power.
+---
+ drivers/gpu/drm/i915/display/intel_bw.c | 16 ++++++++--------
+ 1 file changed, 8 insertions(+), 8 deletions(-)
+
+diff --git a/drivers/gpu/drm/i915/display/intel_bw.c b/drivers/gpu/drm/i915/display/intel_bw.c
+index dc5a5b6..19fc3ff 100644
+--- a/drivers/gpu/drm/i915/display/intel_bw.c
++++ b/drivers/gpu/drm/i915/display/intel_bw.c
+@@ -1073,16 +1073,16 @@ void icl_sagv_post_plane_update(struct intel_atomic_state *state)
+ 
+ 	WARN_ON(!new_bw_state->base.changed);
+ 
+-	drm_dbg_kms(display->drm, "Relaxing QGV points: 0x%x -> 0x%x\n",
+-		    old_mask, new_mask);
+-
+ 	/*
+-	 * Allow required qgv points after updating the configuration.
+-	 * According to BSpec we can't mask and unmask qgv points at the same
+-	 * time. Also masking should be done before updating the configuration
+-	 * and unmasking afterwards.
++	 * Do not relax the points. Allowing more of them has the PCODE change the
++	 * memory's frequency point, which stalls memory for about 90 ms, and it
++	 * does so after the display is already scanning out: the display's FIFO
++	 * underruns, its page-table cache is left with a wrong block, and the
++	 * panel shows a stripe of the wrong memory from then on. A point left
++	 * restricted only costs some power.
+ 	 */
+-	icl_pcode_restrict_qgv_points(display, new_mask);
++	drm_dbg_kms(display->drm, "Not relaxing QGV points: 0x%x -> 0x%x\n",
++		    old_mask, new_mask);
+ }
+ 
+ static int mtl_find_qgv_points(struct intel_display *display,
+-- 
+2.43.0
+
